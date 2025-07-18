@@ -35,7 +35,7 @@ public class EventInterestController {
             }
         }
         String message = String.format("Hi, I am interested in '%s'. My name is %s.", eventName, interest.getUserName());
-        String whatsappUrl = "https://wa.me/?text=" + URLEncoder.encode(message, StandardCharsets.UTF_8);
+        String whatsappUrl = "https://wa.me/9535446318?text=" + URLEncoder.encode(message, StandardCharsets.UTF_8);
 
         return ResponseEntity.ok(new WhatsAppResponse(saved, whatsappUrl));
     }
