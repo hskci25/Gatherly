@@ -29,9 +29,22 @@ public class EventController {
         Event existingEvent = existingEventOpt.get();
         existingEvent.setName(event.getName());
         existingEvent.setDescription(event.getDescription());
+        existingEvent.setLongDescription(event.getLongDescription());
         existingEvent.setLocation(event.getLocation());
+        existingEvent.setVenue(event.getVenue());
+        existingEvent.setAddress(event.getAddress());
         existingEvent.setStartDate(event.getStartDate());
         existingEvent.setEndDate(event.getEndDate());
+        existingEvent.setPrice(event.getPrice());
+        existingEvent.setMaxCapacity(event.getMaxCapacity());
+        existingEvent.setCurrentBookings(event.getCurrentBookings());
+        existingEvent.setChefName(event.getChefName());
+        existingEvent.setChefBio(event.getChefBio());
+        existingEvent.setMenuItems(event.getMenuItems());
+        existingEvent.setImageUrls(event.getImageUrls());
+        existingEvent.setCuisineType(event.getCuisineType());
+        existingEvent.setEventType(event.getEventType());
+        existingEvent.setStatus(event.getStatus());
         Event updatedEvent = eventRepository.save(existingEvent);
         return ResponseEntity.ok(updatedEvent);
     }
