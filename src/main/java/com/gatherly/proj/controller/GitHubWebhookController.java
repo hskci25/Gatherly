@@ -42,12 +42,25 @@ public class GitHubWebhookController {
 
     @Async
     public CompletableFuture<Void> processReviewAsync(String repo, int prNumber) {
+        System.out.println("Starting async review process for PR #" + prNumber + " in repo " + repo);
+        
         try {
             fetchPRDiffsAndAnalyze(repo, prNumber);
+            System.out.println("Successfully completed review process for PR #" + prNumber);
         } catch (Exception e) {
             System.err.println("Failed to analyze PR " + prNumber + " in repo " + repo + ": " + e.getMessage());
             e.printStackTrace();
+            
+            // Log the specific error type for debugging
+            if (e instanceof NullPointerException) {
+                System.err.println("NPE occurred - likely GitHub API response format issue");
+            } else if (e instanceof IOException) {
+                System.err.println("IO Exception - network or API issue");
+            } else {
+                System.err.println("Unexpected error type: " + e.getClass().getSimpleName());
+            }
         }
+        
         return CompletableFuture.completedFuture(null);
     }
 
@@ -56,13 +69,24 @@ public class GitHubWebhookController {
 
         String commentUrl = "https://api.github.com/repos/" + repo + "/pulls/" + prNumber + "/comments";
 
+        System.out.println("=== Posting Comment to GitHub ===");
+        System.out.println("URL: " + commentUrl);
+        System.out.println("File: " + filePath);
+        System.out.println("Position: " + diffPosition);
+        System.out.println("Comment: " + commentBody);
+
         ObjectMapper mapper = new ObjectMapper();
+        String commitSha = getLatestCommitSha(repo, prNumber);
+        System.out.println("Commit SHA: " + commitSha);
+
         String json = mapper.createObjectNode()
                 .put("body", commentBody)
-                .put("commit_id", getLatestCommitSha(repo, prNumber))
+                .put("commit_id", commitSha)
                 .put("path", filePath)
                 .put("position", diffPosition) // This is now the correct diff position
                 .toString();
+
+        System.out.println("Request JSON: " + json);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(commentUrl))
@@ -75,10 +99,15 @@ public class GitHubWebhookController {
         HttpClient client = HttpClient.newHttpClient();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
         
+        System.out.println("Comment Response Status: " + response.statusCode());
+        System.out.println("Comment Response Headers: " + response.headers().map());
+        System.out.println("Comment Response Body: " + response.body());
+        System.out.println("=== End Comment Posting ===");
+        
         if (response.statusCode() >= 200 && response.statusCode() < 300) {
-            System.out.println("Successfully posted comment to PR #" + prNumber);
+            System.out.println("✅ Successfully posted comment to PR #" + prNumber + " on file " + filePath);
         } else {
-            System.err.println("Failed to post comment. Status: " + response.statusCode() + ", Response: " + response.body());
+            System.err.println("❌ Failed to post comment. Status: " + response.statusCode() + ", Response: " + response.body());
         }
     }
 
@@ -111,16 +140,73 @@ public class GitHubWebhookController {
         HttpClient client = HttpClient.newHttpClient();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
+        System.out.println("=== GitHub API Response Debug ===");
+        System.out.println("API URL: " + apiUrl);
+        System.out.println("Status Code: " + response.statusCode());
+        System.out.println("Response Headers: " + response.headers().map());
+        System.out.println("Response Body: " + response.body());
+        System.out.println("=== End GitHub API Response ===");
+
+        if (response.statusCode() != 200) {
+            System.err.println("Failed to fetch PR files. Status: " + response.statusCode() + ", Response: " + response.body());
+            return;
+        }
+
         // Parse JSON response
         ObjectMapper mapper = new ObjectMapper();
         JsonNode files = mapper.readTree(response.body());
 
+        if (!files.isArray()) {
+            System.err.println("Expected array of files but got: " + files.getNodeType());
+            System.err.println("Actual response structure: " + files.toPrettyString());
+            return;
+        }
+
+        System.out.println("Found " + files.size() + " files to analyze");
+
+        // Log each file structure for debugging
+        for (int i = 0; i < files.size(); i++) {
+            JsonNode file = files.get(i);
+            System.out.println("=== File " + (i + 1) + " Structure ===");
+            System.out.println("Full file object: " + file.toPrettyString());
+            
+            // Log available field names
+            StringBuilder fieldNames = new StringBuilder("Available fields: [");
+            file.fieldNames().forEachRemaining(fieldName -> fieldNames.append(fieldName).append(", "));
+            if (fieldNames.length() > 20) { // Remove last ", "
+                fieldNames.setLength(fieldNames.length() - 2);
+            }
+            fieldNames.append("]");
+            System.out.println(fieldNames.toString());
+            
+            System.out.println("=== End File Structure ===");
+        }
+
         for (JsonNode file : files) {
-            String filename = file.get("filename").asText();
-            String patch = file.has("patch") ? file.get("patch").asText() : null;
+            // Safe extraction with null checks
+            JsonNode filenameNode = file.get("filename");
+            if (filenameNode == null || filenameNode.isNull()) {
+                System.err.println("Skipping file with null filename. File object: " + file.toPrettyString());
+                continue;
+            }
+
+            String filename = filenameNode.asText();
+            if (filename == null || filename.trim().isEmpty()) {
+                System.err.println("Skipping file with empty filename. Filename node: " + filenameNode.toPrettyString());
+                continue;
+            }
+
+            JsonNode patchNode = file.get("patch");
+            String patch = (patchNode != null && !patchNode.isNull()) ? patchNode.asText() : null;
+            
+            System.out.println("Processing file: " + filename);
+            System.out.println("Has patch: " + (patch != null));
+            System.out.println("Patch length: " + (patch != null ? patch.length() : 0));
             
             if (patch != null && !patch.trim().isEmpty()) {
                 System.out.println("Analyzing changes in: " + filename);
+                System.out.println("Patch preview (first 200 chars): " + 
+                    (patch.length() > 200 ? patch.substring(0, 200) + "..." : patch));
                 
                 try {
                     String llmResponse = sendToLLM(filename, patch);
@@ -128,15 +214,27 @@ public class GitHubWebhookController {
                     // Find the best position to place the comment
                     int commentPosition = findBestCommentPosition(patch);
                     
+                    System.out.println("Comment position found: " + commentPosition + " for file: " + filename);
+                    
                     if (commentPosition > 0) {
+                        System.out.println("Posting comment to GitHub for file: " + filename);
                         postCommentToPR(repo, prNumber, filename, commentPosition, llmResponse);
                     } else {
-                        // Fallback: post as general PR comment instead of line-specific
                         System.out.println("Could not find valid position for line comment, skipping for: " + filename);
                     }
                 } catch (Exception e) {
                     System.err.println("Error processing file " + filename + ": " + e.getMessage());
+                    e.printStackTrace();
                 }
+            } else {
+                System.out.println("Skipping file " + filename + " - no patch content or binary file");
+                // Log additional file info for binary/no-patch files
+                JsonNode statusNode = file.get("status");
+                JsonNode additionsNode = file.get("additions");
+                JsonNode deletionsNode = file.get("deletions");
+                System.out.println("File status: " + (statusNode != null ? statusNode.asText() : "unknown"));
+                System.out.println("Additions: " + (additionsNode != null ? additionsNode.asInt() : 0));
+                System.out.println("Deletions: " + (deletionsNode != null ? deletionsNode.asInt() : 0));
             }
         }
     }
@@ -176,6 +274,10 @@ public class GitHubWebhookController {
     }
 
     private String sendToLLM(String filename, String patch) throws IOException, InterruptedException {
+        System.out.println("=== Sending to LLM for Review ===");
+        System.out.println("File: " + filename);
+        System.out.println("Patch length: " + patch.length() + " characters");
+        
         // Enhanced prompt for better code review
         String prompt = """
             Please review the following code changes in file: %s
@@ -207,6 +309,8 @@ public class GitHubWebhookController {
         }
         """.formatted(quotedPrompt);
 
+        System.out.println("LLM Request Body: " + body);
+
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:11434/api/generate"))
                 .header("Content-Type", "application/json")
@@ -216,13 +320,18 @@ public class GitHubWebhookController {
         HttpClient client = HttpClient.newHttpClient();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
+        System.out.println("LLM Response Status: " + response.statusCode());
+        System.out.println("LLM Response Body: " + response.body());
+
         if (response.statusCode() != 200) {
             throw new IOException("LLM API returned status: " + response.statusCode());
         }
 
         JsonNode root = mapper.readTree(response.body());
         String llmResponse = root.get("response").asText();
-        System.out.println("LLM response for " + filename + ": " + llmResponse);
+        System.out.println("LLM Review for " + filename + ": " + llmResponse);
+        System.out.println("=== End LLM Review ===");
+        
         return llmResponse;
     }
 }
